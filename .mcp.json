@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "sangsangplanet": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "env": {
+        "SANGSANG_EMAIL": "${SANGSANG_EMAIL}",
+        "SANGSANG_PASSWORD": "${SANGSANG_PASSWORD}"
+      }
+    }
+  }
+}

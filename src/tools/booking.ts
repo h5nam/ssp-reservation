@@ -232,45 +232,112 @@ export function registerMyReservationsTool(client: SangsangClient) {
         };
       }
 
-      // Try mypage reservation page
-      const res = await client.fetch("/mypage/reservation", {
+      // First get mypage to extract CSRF token
+      const page = await client.fetch("/mypage/reservation", {
         isAjax: false,
         headers: { Accept: "text/html" },
       });
 
-      if (res.text.length < 500) {
+      if (page.text.length < 500) {
         return {
           content: [
             {
               type: "text" as const,
-              text: "⚠️ 마이페이지 접근이 제한되었습니다.\n현재 계정의 멤버 등급을 확인해주세요.\n\n대안: sangsang_available_rooms 도구로 특정 날짜의 전체 예약 현황을 확인할 수 있습니다.",
+              text: "⚠️ 마이페이지 접근이 제한되었습니다.\n현재 계정의 멤버 등급을 확인해주세요.",
             },
           ],
         };
       }
 
-      // Parse reservation list from mypage
-      const $ = cheerio.load(res.text);
-      const reservations: string[] = [];
+      const $page = cheerio.load(page.text);
+      const csrf = String($page("form[name=reserFrm] input[name=_csrf]").val() || "");
 
-      $(".reservation-item, .list-item, tr").each((_, el) => {
-        const text = $(el).text().trim().replace(/\s+/g, " ");
-        if (text.includes("Meeting") || text.includes("회의")) {
-          reservations.push(text);
+      // Fetch meeting reservation list via AJAX endpoint
+      const res = await client.fetch("/mypage/ajaxHtmlMeetingList", {
+        method: "POST",
+        body: new URLSearchParams({
+          _csrf: csrf,
+          currtPg: "1",
+        }),
+        headers: {
+          Referer: "https://www.sangsangplanet.com/mypage/reservation",
+        },
+      });
+
+      if (res.text.length < 50) {
+        return {
+          content: [{ type: "text" as const, text: "예약 내역이 없습니다." }],
+        };
+      }
+
+      // Parse reservation table
+      const $ = cheerio.load(res.text);
+
+      // Extract point info
+      const pointInfo = $(".my_cupon_wrap").text().trim().replace(/\s+/g, " ");
+
+      // Extract reservations from table
+      interface ReservationEntry {
+        no: string;
+        room: string;
+        period: string;
+        points: string;
+        extra: string;
+        person: string;
+        date: string;
+        status: string;
+      }
+      const reservations: ReservationEntry[] = [];
+
+      $("table.table_list tbody tr").each((_, el) => {
+        const tds = $(el).find("td");
+        if (tds.length >= 7) {
+          // PC period is class="period pc", mobile is "period mb" — use PC version
+          const no = $(tds[0]).text().trim();
+          const room = $(tds[1]).text().trim();
+          const periodPc = $(el).find("td.period.pc").text().trim().replace(/\s+/g, " ");
+          const pointsTd = $(el).find("td.coupon").eq(0).text().trim().replace(/\s+/g, " ");
+          const extraTd = $(el).find("td.coupon").eq(1).text().trim().replace(/\s+/g, " ");
+          const person = $(el).find("td.name").text().trim();
+          const dateTd = $(el).find("td.date").text().trim();
+          const status = $(el).find("td.state").text().trim();
+
+          reservations.push({
+            no,
+            room,
+            period: periodPc,
+            points: pointsTd,
+            extra: extraTd,
+            person,
+            date: dateTd,
+            status,
+          });
         }
       });
 
       if (reservations.length === 0) {
         return {
-          content: [{ type: "text" as const, text: "예약 내역이 없거나 페이지를 파싱할 수 없습니다." }],
+          content: [{ type: "text" as const, text: "예약 내역이 없습니다." }],
         };
+      }
+
+      let output = `📋 내 회의실 예약 목록\n${pointInfo}\n\n`;
+
+      for (const r of reservations) {
+        const statusIcon = r.status.includes("승인") ? "✅" :
+          r.status.includes("대기") ? "⏳" :
+          r.status.includes("취소") ? "❌" : "📌";
+        output += `${statusIcon} #${r.no} ${r.room}\n`;
+        output += `   📅 ${r.period}\n`;
+        output += `   💰 포인트: ${r.points} / 추가: ${r.extra}\n`;
+        output += `   👤 ${r.person} | 예약일: ${r.date} | 상태: ${r.status}\n\n`;
       }
 
       return {
         content: [
           {
             type: "text" as const,
-            text: `📋 내 예약 목록:\n\n${reservations.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
+            text: output,
           },
         ],
       };

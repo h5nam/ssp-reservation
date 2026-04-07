@@ -150,65 +150,86 @@ export function registerBookingTool(client: SangsangClient) {
         reservationAgree01: "Y",
       });
 
-      // Try submitting to the reservation page
-      const submitRes = await client.fetch("/membership/reservationInq", {
+      // Submit reservation via POST /membership/ajaxReserProc
+      const submitRes = await client.fetch("/membership/ajaxReserProc", {
         method: "POST",
         body: bookingData,
         headers: {
-          Referer: "https://www.sangsangplanet.com/membership/reservationInq",
+          Referer: "https://www.sangsangplanet.com/membership/reservation",
         },
       });
 
-      // Check response
-      if (submitRes.text.includes("예약이 완료") || submitRes.text.includes("success") || submitRes.text.includes("예약 신청")) {
+      let submitData: {
+        success?: boolean;
+        duplicate?: boolean;
+        overlap?: boolean;
+        point?: boolean;
+        checkFloor?: boolean;
+        maxtime?: boolean;
+        priceDiff?: boolean;
+        reservationNo?: number;
+      };
+
+      try {
+        submitData = JSON.parse(submitRes.text);
+      } catch {
         return {
           content: [
             {
               type: "text" as const,
-              text: `✅ 예약 신청 완료!\n\n📍 ${room.spaceNm} (${room.spaceFloor}층)\n📅 ${args.date}\n⏰ ${args.startTime} ~ ${args.endTime}\n👥 ${args.participants}명\n📝 ${args.description}\n\n${room.spaceConfirmYn === "Y" ? "⚠️ 담당자 승인 후 확정됩니다." : ""}`,
+              text: `⚠️ 서버 응답을 파싱할 수 없습니다.\n응답 (${submitRes.status}): ${submitRes.text.substring(0, 300)}`,
             },
           ],
         };
       }
 
-      // If the first attempt didn't work, try alternative endpoints
-      const altEndpoints = [
-        "/membership/reservationInst",
-        "/membership/reservation",
-      ];
-
-      for (const ep of altEndpoints) {
-        const altRes = await client.fetch(ep, {
-          method: "POST",
-          body: bookingData,
-          headers: {
-            Referer: "https://www.sangsangplanet.com/membership/reservationInq",
-          },
-        });
-
-        if (
-          altRes.text.includes("예약이 완료") ||
-          altRes.text.includes("success") ||
-          altRes.text.includes("예약 신청")
-        ) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `✅ 예약 신청 완료!\n\n📍 ${room.spaceNm} (${room.spaceFloor}층)\n📅 ${args.date}\n⏰ ${args.startTime} ~ ${args.endTime}\n👥 ${args.participants}명\n📝 ${args.description}`,
-              },
-            ],
-          };
-        }
+      // Handle error responses
+      if (submitData.duplicate || submitData.checkFloor) {
+        return {
+          content: [{ type: "text" as const, text: "❌ 시간이 중복되는 예약이 존재합니다." }],
+        };
+      }
+      if (submitData.overlap) {
+        return {
+          content: [{ type: "text" as const, text: "❌ 1일 기준 최대 2시간까지 예약 가능합니다." }],
+        };
+      }
+      if (submitData.point) {
+        return {
+          content: [{ type: "text" as const, text: "❌ 모든 포인트가 소진되었습니다. 대표 및 권한이 있는 멤버만 추가 예약 가능합니다." }],
+        };
+      }
+      if (submitData.priceDiff) {
+        return {
+          content: [{ type: "text" as const, text: "❌ 올바른 접근이 아닙니다. 다시 시도해주세요." }],
+        };
+      }
+      if (submitData.maxtime) {
+        return {
+          content: [{ type: "text" as const, text: "❌ 22시까지만 예약 가능합니다." }],
+        };
       }
 
-      // If nothing worked, return details for debugging
-      const preview = submitRes.text.substring(0, 300);
+      // Success
+      if (submitData.success) {
+        const confirmMsg = room.spaceConfirmYn === "Y"
+          ? "예약이 확정되었습니다."
+          : "담당 매니저가 확인 후 승인하여 안내드리겠습니다.";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ 예약 신청 완료! (예약번호: ${submitData.reservationNo})\n\n📍 ${room.spaceNm} (${room.spaceFloor}층)\n📅 ${args.date}\n⏰ ${args.startTime} ~ ${args.endTime}\n👥 ${args.participants}명\n📝 ${args.description}\n\n${confirmMsg}`,
+            },
+          ],
+        };
+      }
+
       return {
         content: [
           {
             type: "text" as const,
-            text: `⚠️ 예약 요청을 전송했으나 결과를 확인할 수 없습니다.\n\n현재 계정의 멤버 등급이 플래닛 멤버(M03 이상)인지 확인해주세요.\n회의실 예약은 플래닛 멤버 전용 기능입니다.\n\n요청 정보:\n📍 ${room.spaceNm} (${room.spaceFloor}층)\n📅 ${args.date} ${args.startTime}~${args.endTime}\n👥 ${args.participants}명\n\n서버 응답 (${submitRes.status}): ${preview}`,
+            text: `❌ 예약 신청에 실패했습니다.\n서버 응답: ${JSON.stringify(submitData)}`,
           },
         ],
       };

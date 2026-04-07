@@ -2,3 +2,13 @@ node_modules/
 dist/
 .env
 .omc/
+.claude-design/
+
+# Proposal & presentation assets
+proposal.md
+proposal-slides.html
+assets/
+Logo_Transparent.png
+회의실.jpeg
+mcp claude.webp
+typescript

@@ -33,6 +33,8 @@ export class SangsangClient {
   private fetchWithCookies: typeof nodeFetch;
   private loggedIn = false;
   private reloginInProgress = false;
+  private loginFailCount = 0;
+  private static readonly MAX_LOGIN_ATTEMPTS = 2; // 절대 2회 초과 시도 안 함 (5회 잠금 방지)
 
   constructor() {
     const jar = new CookieJar();
@@ -93,6 +95,16 @@ export class SangsangClient {
   }
 
   async login(): Promise<LoginResult> {
+    // Safety: never attempt login more than 2 times total per session
+    // Sangsangplanet locks accounts after 5 failed attempts
+    if (this.loginFailCount >= SangsangClient.MAX_LOGIN_ATTEMPTS) {
+      return {
+        success: false,
+        message:
+          `로그인 시도 ${this.loginFailCount}회 실패 — 추가 시도를 중단합니다. 계정 잠금 방지를 위해 비밀번호를 확인한 후 .env 파일을 수정하고 프로그램을 재시작하세요.`,
+      };
+    }
+
     const email = process.env.SANGSANG_EMAIL;
     const password = process.env.SANGSANG_PASSWORD;
 
@@ -159,12 +171,14 @@ export class SangsangClient {
         verifyRes.text.length < 500 &&
         SESSION_EXPIRY_PATTERNS.some((p) => verifyRes.text.includes(p))
       ) {
+        this.loginFailCount++;
         return {
           success: false,
-          message: "Login failed. Check your credentials.",
+          message: `Login failed (attempt ${this.loginFailCount}/${SangsangClient.MAX_LOGIN_ATTEMPTS}). Check your credentials in .env file.`,
         };
       }
 
+      this.loginFailCount = 0; // Reset on success
       this.loggedIn = true;
       return { success: true, message: "Successfully logged in to 상상플래닛" };
     } catch (error) {

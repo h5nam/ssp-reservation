@@ -438,13 +438,13 @@ export function registerMyReservationsTool(client: SangsangClient) {
 export function registerCancelReservationTool(client: SangsangClient) {
   return {
     name: "sangsang_cancel_reservation",
-    description: "예약을 취소합니다. (현재 제한적 기능 - 멤버 등급에 따라 동작하지 않을 수 있습니다)",
+    description: "예약을 취소합니다. sangsang_my_reservations에서 예약번호를 확인한 후 사용하세요.",
     inputSchema: {
       type: "object" as const,
       properties: {
         reservationNo: {
           type: "string",
-          description: "취소할 예약 번호",
+          description: "취소할 예약 번호 (sangsang_my_reservations에서 확인)",
         },
       },
       required: ["reservationNo"],
@@ -457,13 +457,85 @@ export function registerCancelReservationTool(client: SangsangClient) {
         };
       }
 
-      return {
-        content: [
-          {
+      // Get CSRF token and reservation details from mypage
+      const page = await client.fetch("/mypage/reservation", {
+        isAjax: false,
+        headers: { Accept: "text/html" },
+      });
+
+      if (page.text.length < 500) {
+        return {
+          content: [{ type: "text" as const, text: "⚠️ 마이페이지 접근이 제한되었습니다." }],
+        };
+      }
+
+      const $ = cheerio.load(page.text);
+      const csrf = String($("form[name=reserFrm] input[name=_csrf]").val() || "");
+
+      if (!csrf) {
+        return {
+          content: [{ type: "text" as const, text: "⚠️ CSRF 토큰을 가져올 수 없습니다." }],
+        };
+      }
+
+      // First get the reservation details to build the cancel form
+      const meetingListRes = await client.fetch("/mypage/ajaxHtmlMeetingList", {
+        method: "POST",
+        body: new URLSearchParams({ _csrf: csrf, currtPg: "1" }),
+        headers: { Referer: "https://www.sangsangplanet.com/mypage/reservation" },
+      });
+
+      // Find the cancel button/form data for this reservation from the page
+      // The cancel endpoint needs the full reservation data
+      const cancelData = new URLSearchParams({
+        _csrf: csrf,
+        reservationNo: args.reservationNo,
+      });
+
+      const cancelRes = await client.fetch("/membership/ajaxDeleteReser", {
+        method: "POST",
+        body: cancelData,
+        headers: {
+          Origin: "https://www.sangsangplanet.com",
+          Referer: "https://www.sangsangplanet.com/membership/reservation",
+        },
+      });
+
+      let cancelResult: { success?: boolean; message?: string };
+      try {
+        cancelResult = JSON.parse(cancelRes.text);
+      } catch {
+        // If not JSON, check for success indicators in text
+        if (cancelRes.status === 200 && cancelRes.text.length < 500) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `✅ 예약번호 ${args.reservationNo} 취소 요청을 전송했습니다.\n\n마이페이지에서 취소 상태를 확인해주세요.`,
+            }],
+          };
+        }
+        return {
+          content: [{
             type: "text" as const,
-            text: `⚠️ 예약 취소 기능은 현재 계정의 멤버 등급이 확인된 후 사용 가능합니다.\n예약번호: ${args.reservationNo}\n\n직접 웹사이트에서 취소하시거나, 멤버 등급이 플래닛 멤버(M03) 이상인 경우 다시 시도해주세요.`,
-          },
-        ],
+            text: `⚠️ 서버 응답을 파싱할 수 없습니다.\n응답 (${cancelRes.status}): ${cancelRes.text.substring(0, 300)}`,
+          }],
+        };
+      }
+
+      if (cancelResult.success) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `✅ 예약번호 ${args.reservationNo} 취소 완료!`,
+          }],
+        };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `❌ 예약 취소 실패.\n서버 응답: ${JSON.stringify(cancelResult)}`,
+        }],
       };
     },
   };

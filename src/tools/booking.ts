@@ -309,12 +309,17 @@ export function registerBookingTool(client: SangsangClient) {
 export function registerMyReservationsTool(client: SangsangClient) {
   return {
     name: "sangsang_my_reservations",
-    description: "내 예약 목록을 조회합니다.",
+    description: "내 예약 목록을 조회합니다. 특정 날짜를 지정하면 해당 날짜의 내 예약을 확인합니다. 미지정 시 마이페이지에서 전체 내역을 조회합니다.",
     inputSchema: {
       type: "object" as const,
-      properties: {},
+      properties: {
+        date: {
+          type: "string",
+          description: "조회할 날짜 (YYYY-MM-DD). 미지정 시 마이페이지에서 전체 내역 조회",
+        },
+      },
     },
-    handler: async () => {
+    handler: async (args?: { date?: string }) => {
       const loginResult = await client.ensureLoggedIn();
       if (!loginResult.success) {
         return {
@@ -322,7 +327,72 @@ export function registerMyReservationsTool(client: SangsangClient) {
         };
       }
 
-      // First get mypage to extract CSRF token
+      // If date specified, use ajaxReser2 to find my reservations (myYn/teamYn flags)
+      if (args?.date) {
+        const { csrf } = await getPageData(client);
+        const dateCompact = args.date.replace(/-/g, "");
+
+        const res = await client.fetch("/membership/ajaxReser2", {
+          method: "POST",
+          body: new URLSearchParams({ _csrf: csrf, spaceGubun: "1", spaceFloor: "" }),
+          headers: {
+            Origin: "https://www.sangsangplanet.com",
+            Referer: "https://www.sangsangplanet.com/membership/reservation",
+          },
+        });
+
+        let data: {
+          list: Array<{ spaceNo: number; spaceNm: string; spaceFloor: string }>;
+          reservationList: Array<{
+            reservationDt: string;
+            reservationSpaceNo: number;
+            reservationStime: string;
+            reservationEtime: string;
+            reservationNo: number;
+            reservationNm: string;
+            reservationFloor: string;
+            reservationMemCnt: string;
+            myYn: string;
+            teamYn: string;
+            reservationState: string;
+          }>;
+        };
+
+        try {
+          data = JSON.parse(res.text);
+        } catch {
+          return { content: [{ type: "text" as const, text: "데이터를 파싱할 수 없습니다." }] };
+        }
+
+        // Filter reservations for the target date that are mine or my team's
+        const myReservations = data.reservationList.filter(
+          (r) => r.reservationDt === dateCompact && (r.myYn === "Y" || r.teamYn === "Y")
+        );
+
+        if (myReservations.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `📅 ${args.date}에 예약된 내 회의실이 없습니다.` }],
+          };
+        }
+
+        // Build room name lookup
+        const roomMap = new Map(data.list.map((r) => [r.spaceNo, r.spaceNm]));
+
+        let output = `📅 ${args.date} 내 예약 목록\n\n`;
+        for (const r of myReservations) {
+          const roomName = roomMap.get(r.reservationSpaceNo) || r.reservationNm || `spaceNo:${r.reservationSpaceNo}`;
+          const sTime = `${r.reservationStime.slice(0, 2)}:${r.reservationStime.slice(2)}`;
+          const eTime = `${r.reservationEtime.slice(0, 2)}:${r.reservationEtime.slice(2)}`;
+          const isTeam = r.teamYn === "Y" && r.myYn !== "Y" ? " (팀)" : "";
+          const isMine = r.myYn === "Y" ? " (본인)" : "";
+          output += `📌 #${r.reservationNo} ${roomName} (${r.reservationFloor}층)${isMine}${isTeam}\n`;
+          output += `   ⏰ ${sTime}~${eTime} | 👥 ${r.reservationMemCnt}명\n\n`;
+        }
+
+        return { content: [{ type: "text" as const, text: output }] };
+      }
+
+      // No date specified: fall back to mypage for full history
       const page = await client.fetch("/mypage/reservation", {
         isAjax: false,
         headers: { Accept: "text/html" },
@@ -333,7 +403,7 @@ export function registerMyReservationsTool(client: SangsangClient) {
           content: [
             {
               type: "text" as const,
-              text: "⚠️ 마이페이지 접근이 제한되었습니다.\n현재 계정의 멤버 등급을 확인해주세요.",
+              text: "⚠️ 마이페이지 접근이 제한되었습니다.\n날짜를 지정하면 해당 날짜의 내 예약을 확인할 수 있습니다. (예: date='2026-04-09')",
             },
           ],
         };

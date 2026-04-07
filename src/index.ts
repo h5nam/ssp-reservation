@@ -60,9 +60,16 @@ server.tool(
 
 // Register my reservations tool
 const myResDef = registerMyReservationsTool(client);
-server.tool(myResDef.name, myResDef.description, {}, async () => {
-  return myResDef.handler();
-});
+server.tool(
+  myResDef.name,
+  myResDef.description,
+  {
+    date: z.string().optional().describe("조회할 날짜 (YYYY-MM-DD). 미지정 시 전체 내역"),
+  },
+  async (args) => {
+    return myResDef.handler(args);
+  }
+);
 
 // Register cancel reservation tool
 const cancelDef = registerCancelReservationTool(client);

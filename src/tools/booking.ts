@@ -2,10 +2,20 @@ import { SangsangClient } from "../client.js";
 import * as cheerio from "cheerio";
 
 async function getPageData(client: SangsangClient) {
-  const page = await client.fetch("/membership/reservationInq", {
+  // Try /membership/reservation first (플래닛멤버 전용, CSRF token source)
+  let page = await client.fetch("/membership/reservation", {
     isAjax: false,
     headers: { Accept: "text/html" },
   });
+
+  // Fallback to reservationInq if reservation page is blocked
+  if (page.text.length < 500) {
+    page = await client.fetch("/membership/reservationInq", {
+      isAjax: false,
+      headers: { Accept: "text/html" },
+    });
+  }
+
   const $ = cheerio.load(page.text);
   return {
     csrf: String($('input[name=_csrf]').first().val() || ""),
@@ -16,13 +26,17 @@ export function registerBookingTool(client: SangsangClient) {
   return {
     name: "sangsang_book_room",
     description:
-      "상상플래닛 회의실을 예약합니다. 먼저 sangsang_available_rooms로 가용 회의실을 확인한 후 사용하세요.",
+      "상상플래닛 회의실을 예약합니다. roomName 또는 spaceNo 중 하나를 지정하세요. 회의실 매핑: 201호=1, 202호=2, 203호=3, 401호=4, 402호=5, 403호=6, 501호=7, 601호=10, 602호=11",
     inputSchema: {
       type: "object" as const,
       properties: {
+        roomName: {
+          type: "string",
+          description: "회의실 이름 (예: '403', '403호', 'Meeting Room 403'). spaceNo 대신 사용 가능",
+        },
         spaceNo: {
           type: "number",
-          description: "회의실 번호 (sangsang_available_rooms에서 확인)",
+          description: "회의실 번호 (201호=1, 202호=2, 203호=3, 401호=4, 402호=5, 403호=6, 501호=7, 601호=10, 602호=11)",
         },
         date: {
           type: "string",
@@ -45,10 +59,11 @@ export function registerBookingTool(client: SangsangClient) {
           description: "회의 내용/목적 (단체명, 회의내용 필수)",
         },
       },
-      required: ["spaceNo", "date", "startTime", "endTime", "participants", "description"],
+      required: ["date", "startTime", "endTime", "participants", "description"],
     },
     handler: async (args: {
-      spaceNo: number;
+      roomName?: string;
+      spaceNo?: number;
       date: string;
       startTime: string;
       endTime: string;
@@ -59,6 +74,32 @@ export function registerBookingTool(client: SangsangClient) {
       if (!loginResult.success) {
         return {
           content: [{ type: "text" as const, text: `로그인 실패: ${loginResult.message}` }],
+        };
+      }
+
+      // Room name to spaceNo mapping
+      const ROOM_MAP: Record<string, number> = {
+        "201": 1, "202": 2, "203": 3,
+        "401": 4, "402": 5, "403": 6,
+        "501": 7, "601": 10, "602": 11,
+      };
+
+      let resolvedSpaceNo = args.spaceNo;
+
+      if (!resolvedSpaceNo && args.roomName) {
+        // Extract room number from name like "403", "403호", "Meeting Room 403"
+        const match = args.roomName.match(/(\d{3})/);
+        if (match && ROOM_MAP[match[1]]) {
+          resolvedSpaceNo = ROOM_MAP[match[1]];
+        }
+      }
+
+      if (!resolvedSpaceNo) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "회의실을 지정해주세요. 예: roomName='403' 또는 spaceNo=6\n\n회의실 매핑: 201호=1, 202호=2, 203호=3, 401호=4, 402호=5, 403호=6, 501호=7, 601호=10, 602호=11",
+          }],
         };
       }
 
@@ -76,7 +117,8 @@ export function registerBookingTool(client: SangsangClient) {
           spaceFloor: "",
         }),
         headers: {
-          Referer: "https://www.sangsangplanet.com/membership/reservationInq",
+          Origin: "https://www.sangsangplanet.com",
+          Referer: "https://www.sangsangplanet.com/membership/reservation",
         },
       });
 
@@ -104,25 +146,31 @@ export function registerBookingTool(client: SangsangClient) {
         };
       }
 
-      const room = roomData.list.find((r) => r.spaceNo === args.spaceNo);
+      const room = roomData.list.find((r) => r.spaceNo === resolvedSpaceNo);
       if (!room) {
         return {
           content: [
             {
               type: "text" as const,
-              text: `회의실 번호 ${args.spaceNo}를 찾을 수 없습니다. 가능한 번호: ${roomData.list.map((r) => `${r.spaceNo}(${r.spaceNm})`).join(", ")}`,
+              text: `회의실 번호 ${resolvedSpaceNo}를 찾을 수 없습니다. 가능한 번호: ${roomData.list.map((r) => `${r.spaceNo}(${r.spaceNm})`).join(", ")}`,
             },
           ],
         };
       }
 
-      // Build booking form data matching popRoomFrm
+      // Build booking form data matching exact browser request
+      const couponPrice = room.spaceCouponPrice || 0;
+      // Calculate number of 30-min slots
+      const startMinutes = parseInt(sTime.slice(0, 2)) * 60 + parseInt(sTime.slice(2));
+      const endMinutes = parseInt(eTime.slice(0, 2)) * 60 + parseInt(eTime.slice(2));
+      const slotCount = (endMinutes - startMinutes) / 30;
+      const totalCupPoint = couponPrice * slotCount;
       const bookingData = new URLSearchParams({
         _csrf: csrf,
         reservationGubun: "1",
         reservationState: "",
         reservationFloor: room.spaceFloor,
-        reservationNo: "",
+        reservationNo: "0",
         reservationDt: dateCompact,
         reservationStime: sTime,
         reservationEtime: eTime,
@@ -130,13 +178,15 @@ export function registerBookingTool(client: SangsangClient) {
         spaceConfirmYn: room.spaceConfirmYn || "Y",
         spaceMinTime: room.spaceMinTime || "0030",
         spaceSeatCnt: String(room.spaceSeatCnt),
-        spaceCouponYn: room.spaceCouponYn || "N",
+        spaceCouponYn: room.spaceCouponYn || "Y",
         spaceCouponCnt: String(room.spaceCouponCnt || 0),
-        spaceCouponPrice: String(room.spaceCouponPrice || 0),
+        spaceCupPoint: "",
+        spaceCouponPrice: String(couponPrice),
         refundYn: "",
         refundPercent: "",
-        reservationCouponYn: "",
+        reservationCouponYn: "Y",
         reservationCouponCnt: "0",
+        reservationCupPoint: String(totalCupPoint),
         reservationCouponPrice: "0",
         spaceAvailableEdt: room.spaceAvailableEdt || "2200",
         spaceAvailableSdt: room.spaceAvailableSdt || "0900",
@@ -151,10 +201,17 @@ export function registerBookingTool(client: SangsangClient) {
       });
 
       // Submit reservation via POST /membership/ajaxReserProc
+      if (!csrf) {
+        return {
+          content: [{ type: "text" as const, text: "⚠️ CSRF 토큰을 가져올 수 없습니다. 로그인 상태를 확인해주세요." }],
+        };
+      }
+
       const submitRes = await client.fetch("/membership/ajaxReserProc", {
         method: "POST",
         body: bookingData,
         headers: {
+          Origin: "https://www.sangsangplanet.com",
           Referer: "https://www.sangsangplanet.com/membership/reservation",
         },
       });
@@ -182,6 +239,18 @@ export function registerBookingTool(client: SangsangClient) {
           ],
         };
       }
+
+      // Debug: log what we sent and received
+      console.error("[DEBUG booking] room:", JSON.stringify({
+        spaceNo: room.spaceNo,
+        spaceNm: room.spaceNm,
+        spaceCouponPrice: room.spaceCouponPrice,
+        spaceCouponYn: room.spaceCouponYn,
+        spaceCouponCnt: room.spaceCouponCnt,
+        spaceConfirmYn: room.spaceConfirmYn,
+      }));
+      console.error("[DEBUG booking] calculated:", { couponPrice, slotCount, totalCupPoint });
+      console.error("[DEBUG booking] response:", JSON.stringify(submitData));
 
       // Handle error responses
       if (submitData.duplicate || submitData.checkFloor) {

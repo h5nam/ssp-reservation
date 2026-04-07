@@ -101,7 +101,7 @@ export function registerRoomsTool(client: SangsangClient) {
         method: "POST",
         body: params,
         headers: {
-          Referer: "https://www.sangsangplanet.com/membership/reservationInq",
+          Referer: "https://www.sangsangplanet.com/membership/reservation",
         },
       });
 

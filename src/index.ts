@@ -45,7 +45,8 @@ server.tool(
   bookingDef.name,
   bookingDef.description,
   {
-    spaceNo: z.number().describe("회의실 번호"),
+    roomName: z.string().optional().describe("회의실 이름 (예: '403', '403호'). 매핑: 201=1,202=2,203=3,401=4,402=5,403=6,501=7,601=10,602=11"),
+    spaceNo: z.number().optional().describe("회의실 번호 (roomName 사용 시 불필요)"),
     date: z.string().describe("예약 날짜 (YYYY-MM-DD)"),
     startTime: z.string().describe("시작 시간 (HH:MM)"),
     endTime: z.string().describe("종료 시간 (HH:MM)"),

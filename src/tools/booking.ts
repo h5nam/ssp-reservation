@@ -245,18 +245,6 @@ export function registerBookingTool(client: SangsangClient) {
         };
       }
 
-      // Debug: log what we sent and received
-      console.error("[DEBUG booking] room:", JSON.stringify({
-        spaceNo: room.spaceNo,
-        spaceNm: room.spaceNm,
-        spaceCouponPrice: room.spaceCouponPrice,
-        spaceCouponYn: room.spaceCouponYn,
-        spaceCouponCnt: room.spaceCouponCnt,
-        spaceConfirmYn: room.spaceConfirmYn,
-      }));
-      console.error("[DEBUG booking] calculated:", { couponPrice, slotCount, totalCupPoint });
-      console.error("[DEBUG booking] response:", JSON.stringify(submitData));
-
       // Handle error responses
       if (submitData.duplicate || submitData.checkFloor) {
         return {

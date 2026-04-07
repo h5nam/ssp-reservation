@@ -19,6 +19,9 @@ async function getPageData(client: SangsangClient) {
   const $ = cheerio.load(page.text);
   return {
     csrf: String($('input[name=_csrf]').first().val() || ""),
+    memberType: String($('form[name=rFrm] input[name=memberType]').val() || ""),
+    memberNo: String($('form[name=rFrm] input[name=memberNo]').val() || ""),
+    memberAuth: String($('form[name=rFrm] input[name=memberAuth]').val() || ""),
   };
 }
 
@@ -103,7 +106,7 @@ export function registerBookingTool(client: SangsangClient) {
         };
       }
 
-      const { csrf } = await getPageData(client);
+      const { csrf, memberType, memberNo, memberAuth } = await getPageData(client);
       const dateCompact = args.date.replace(/-/g, "");
       const sTime = args.startTime.replace(":", "");
       const eTime = args.endTime.replace(":", "");
@@ -113,6 +116,8 @@ export function registerBookingTool(client: SangsangClient) {
         method: "POST",
         body: new URLSearchParams({
           _csrf: csrf,
+          memberType,
+          memberNo,
           spaceGubun: "1",
           spaceFloor: "",
         }),
@@ -329,12 +334,19 @@ export function registerMyReservationsTool(client: SangsangClient) {
 
       // If date specified, use ajaxReser2 to find my reservations (myYn/teamYn flags)
       if (args?.date) {
-        const { csrf } = await getPageData(client);
+        const { csrf, memberType, memberNo, memberAuth } = await getPageData(client);
         const dateCompact = args.date.replace(/-/g, "");
 
         const res = await client.fetch("/membership/ajaxReser2", {
           method: "POST",
-          body: new URLSearchParams({ _csrf: csrf, spaceGubun: "1", spaceFloor: "" }),
+          body: new URLSearchParams({
+            _csrf: csrf,
+            memberType,
+            memberNo,
+            memberAuth,
+            spaceGubun: "1",
+            spaceFloor: "",
+          }),
           headers: {
             Origin: "https://www.sangsangplanet.com",
             Referer: "https://www.sangsangplanet.com/membership/reservation",

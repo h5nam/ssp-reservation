@@ -37,13 +37,23 @@ function formatTime(t: string): string {
   return `${t.slice(0, 2)}:${t.slice(2)}`;
 }
 
-async function getCsrfToken(client: SangsangClient): Promise<string> {
-  const page = await client.fetch("/membership/reservationInq", {
+async function getPageData(client: SangsangClient) {
+  let page = await client.fetch("/membership/reservation", {
     isAjax: false,
     headers: { Accept: "text/html" },
   });
+  if (page.text.length < 500) {
+    page = await client.fetch("/membership/reservationInq", {
+      isAjax: false,
+      headers: { Accept: "text/html" },
+    });
+  }
   const $ = cheerio.load(page.text);
-  return String($('input[name=_csrf]').first().val() || "");
+  return {
+    csrf: String($('input[name=_csrf]').first().val() || ""),
+    memberType: String($('form[name=rFrm] input[name=memberType]').val() || ""),
+    memberNo: String($('form[name=rFrm] input[name=memberNo]').val() || ""),
+  };
 }
 
 export function registerRoomsTool(client: SangsangClient) {
@@ -78,7 +88,7 @@ export function registerRoomsTool(client: SangsangClient) {
         };
       }
 
-      const csrf = await getCsrfToken(client);
+      const { csrf, memberType, memberNo } = await getPageData(client);
 
       // Default to tomorrow
       let dateStr = args.date;
@@ -91,8 +101,8 @@ export function registerRoomsTool(client: SangsangClient) {
 
       const params = new URLSearchParams({
         _csrf: csrf,
-        memberType: "",
-        memberNo: "",
+        memberType,
+        memberNo,
         spaceGubun: "1", // 1=meeting rooms
         spaceFloor: args.floor || "",
       });

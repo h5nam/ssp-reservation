@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .omc/
+.omx/
 .claude-design/
 
 # Proposal & presentation assets

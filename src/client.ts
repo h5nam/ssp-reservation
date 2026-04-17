@@ -1,4 +1,7 @@
 import { CookieJar } from "tough-cookie";
+import { execFile } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import nodeFetch from "node-fetch";
 import fetchCookie from "fetch-cookie";
 import { LoginResult } from "./types.js";
@@ -7,6 +10,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const BASE_URL = "https://www.sangsangplanet.com";
+const execFileAsync = promisify(execFile);
 
 const DEFAULT_HEADERS: Record<string, string> = {
   "User-Agent":
@@ -29,29 +33,34 @@ const SESSION_EXPIRY_PATTERNS = [
   "location.href='/member/login'",
 ];
 
+type FetchOptions = {
+  method?: string;
+  body?: string | URLSearchParams;
+  headers?: Record<string, string>;
+  isAjax?: boolean;
+};
+
 export class SangsangClient {
   private fetchWithCookies: typeof nodeFetch;
+  private cookieJar: CookieJar;
   private loggedIn = false;
   private reloginInProgress = false;
   private loginFailCount = 0;
   private static readonly MAX_LOGIN_ATTEMPTS = 2; // 절대 2회 초과 시도 안 함 (5회 잠금 방지)
 
   constructor() {
-    const jar = new CookieJar();
-    this.fetchWithCookies = fetchCookie(nodeFetch, jar) as typeof nodeFetch;
+    this.cookieJar = new CookieJar();
+    this.fetchWithCookies = fetchCookie(nodeFetch, this.cookieJar) as typeof nodeFetch;
   }
 
   async fetch(
     path: string,
-    options: {
-      method?: string;
-      body?: string | URLSearchParams;
-      headers?: Record<string, string>;
-      isAjax?: boolean;
-    } = {}
+    options: FetchOptions = {}
   ): Promise<{ status: number; text: string }> {
     const url = `${BASE_URL}${path}`;
     const isAjax = options.isAjax !== false;
+    const method = options.method ?? "GET";
+    const body = options.body?.toString();
 
     const headers = {
       ...(isAjax ? AJAX_HEADERS : DEFAULT_HEADERS),
@@ -59,16 +68,40 @@ export class SangsangClient {
       ...options.headers,
     };
 
-    const res = await this.fetchWithCookies(url, {
-      method: options.method ?? "GET",
-      headers,
-      body: options.body?.toString(),
-      redirect: "follow",
-    });
+    let status: number;
+    let text: string;
 
-    const text = await res.text();
+    try {
+      const res = await this.fetchWithCookies(url, {
+        method,
+        headers,
+        body,
+        redirect: "follow",
+      });
+      status = res.status;
+      text = await res.text();
+    } catch (error) {
+      if (!this.canUseCurlFallback(path)) {
+        throw error;
+      }
 
-    // Detect session expiry: only on short redirect-to-login pages
+      console.error(
+        `Primary HTTP client failed for ${path}; retrying with curl fallback.`
+      );
+      const fallback = await this.fetchWithCurl(url, method, headers, body);
+      status = fallback.status;
+      text = fallback.text;
+    }
+
+    return this.handleSessionExpiry(path, options, status, text);
+  }
+
+  private async handleSessionExpiry(
+    path: string,
+    options: FetchOptions,
+    status: number,
+    text: string
+  ): Promise<{ status: number; text: string }> {
     if (
       !path.includes("/member/") &&
       !this.reloginInProgress &&
@@ -91,7 +124,113 @@ export class SangsangClient {
       }
     }
 
-    return { status: res.status, text };
+    return { status, text };
+  }
+
+  private canUseCurlFallback(path: string): boolean {
+    // Only retry read-only endpoints. Retrying login, booking, or cancellation
+    // could expose credentials in process args or create duplicate side effects.
+    return (
+      path === "/membership/ajaxReser2" ||
+      path === "/mypage/ajaxHtmlMeetingList"
+    );
+  }
+
+  private async fetchWithCurl(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body?: string
+  ): Promise<{ status: number; text: string }> {
+    let lastMessage = "unknown error";
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        return await this.runCurl(url, method, headers, body);
+      } catch (error) {
+        lastMessage = error instanceof Error ? error.message : String(error);
+        if (attempt === 4) {
+          break;
+        }
+        console.error(`curl fallback attempt ${attempt} failed; retrying.`);
+        await delay(attempt * 2000);
+      }
+    }
+
+    throw new Error(
+      `curl fallback failed for ${new URL(url).pathname}: ${lastMessage}`
+    );
+  }
+
+  private async runCurl(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body?: string
+  ): Promise<{ status: number; text: string }> {
+    const args = [
+      "--http1.1",
+      "-sS",
+      "-L",
+      "--retry",
+      "2",
+      "--retry-delay",
+      "2",
+      "--connect-timeout",
+      "15",
+      "--max-time",
+      "180",
+      "-X",
+      method,
+    ];
+
+    for (const [name, value] of Object.entries(headers)) {
+      args.push("-H", `${name}: ${value}`);
+    }
+
+    const cookie = await this.cookieJar.getCookieString(url);
+    if (cookie) {
+      args.push("-H", `Cookie: ${cookie}`);
+    }
+
+    if (body !== undefined) {
+      args.push("--data-raw", body);
+    }
+
+    const statusMarker = "__SSP_HTTP_STATUS__:";
+    args.push("-w", `\n${statusMarker}%{http_code}`, url);
+
+    let stdout: string;
+    try {
+      ({ stdout } = await execFileAsync("curl", args, {
+        encoding: "utf8",
+        maxBuffer: 120 * 1024 * 1024,
+        timeout: 210_000,
+      }));
+    } catch (error) {
+      const curlError = error as {
+        code?: unknown;
+        signal?: unknown;
+        stderr?: unknown;
+      };
+      const stderr =
+        typeof curlError.stderr === "string"
+          ? curlError.stderr.split("\n")[0]
+          : "";
+      const exit = curlError.signal
+        ? `signal ${String(curlError.signal)}`
+        : `code ${String(curlError.code ?? "unknown")}`;
+      throw new Error(stderr ? `curl exited with ${exit}: ${stderr}` : exit);
+    }
+
+    const markerIndex = stdout.lastIndexOf(statusMarker);
+    if (markerIndex === -1) {
+      return { status: 0, text: stdout };
+    }
+
+    const text = stdout.slice(0, markerIndex).replace(/\n$/, "");
+    const status = Number(stdout.slice(markerIndex + statusMarker.length).trim());
+    return { status, text };
   }
 
   async login(): Promise<LoginResult> {
